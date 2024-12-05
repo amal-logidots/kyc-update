@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KYC Details</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f4f4f4;
+        }
+        button {
+            padding: 5px 10px;
+            margin: 5px;
+            cursor: pointer;
+        }
+        .btn-approve {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+        }
+        .btn-reject {
+            background-color: #f44336;
+            color: white;
+            border: none;
+        }
+        .btn-view {
+            background-color: #008CBA;
+            color: white;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>KYC Details</h1>
+    <table id="kycTable">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <div id="kycDetails" style="display:none; border: 1px solid #ddd; padding: 10px;">
+        <h2>KYC Details</h2>
+        <p><strong>Pan Number:</strong> <span id="panNumber"></span></p>
+        <p><strong>GST Number:</strong> <span id="gstNumber"></span></p>
+        <p><strong>Bank Account Number:</strong> <span id="bankAccount"></span></p>
+        <p><strong>IFSC Code:</strong> <span id="ifscCode"></span></p>
+        <p><strong>KYC Type:</strong> <span id="kycType"></span></p>
+        <button class="btn-approve" onclick="updateKycStatus('approved')">Approve</button>
+        <button class="btn-reject" onclick="updateKycStatus('rejected')">Reject</button>
+    </div>
+
+    <script>
+        const baseUrl = 'http://api.feezy.alpha.logidots.com/api';
+        let currentKycId = null;
+
+        async function fetchKycList() {
+            const response = await fetch(`${baseUrl}/user-kyc/admin?page=1&limit=20`);
+            const data = await response.json();
+            const tbody = document.querySelector("#kycTable tbody");
+            tbody.innerHTML = '';
+            data.data.forEach(kyc => {
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                    <td>${kyc.user.name || "N/A"}</td>
+                    <td>${kyc.status}</td>
+                    <td>
+                        <button class="btn-view" onclick="viewKycDetails('${kyc.id}', ${JSON.stringify(kyc).replace(/"/g, '&quot;')})">View</button>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function viewKycDetails(id, kyc) {
+            currentKycId = id;
+            document.getElementById("panNumber").innerText = kyc.pan_number || "N/A";
+            document.getElementById("gstNumber").innerText = kyc.gst_number || "N/A";
+            document.getElementById("bankAccount").innerText = kyc.bank_account_number || "N/A";
+            document.getElementById("ifscCode").innerText = kyc.ifsc_code || "N/A";
+            document.getElementById("kycType").innerText = kyc.kyc_type || "N/A";
+            document.getElementById("kycDetails").style.display = "block";
+        }
+
+        async function updateKycStatus(status) {
+            if (!currentKycId) return alert("No KYC selected");
+            const response = await fetch(`${baseUrl}/user-kyc/${currentKycId}/update-status`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ status }),
+            });
+            if (response.ok) {
+                alert(`KYC ${status} successfully!`);
+                fetchKycList();
+                document.getElementById("kycDetails").style.display = "none";
+            } else {
+                alert("Failed to update KYC status");
+            }
+        }
+
+        fetchKycList();
+    </script>
+</body>
+</html>
