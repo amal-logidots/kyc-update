@@ -1,390 +1,171 @@
-<?php
-
-namespace App\Repositories;
-
-use App\Exports\TestReportExport;
-use App\Exports\UsersExport;
-use App\Exports\UserTestExport;
-use App\Models\AttemptedQuestion;
-use App\Models\Question;
-use App\Models\Test;
-use App\Models\TestAttempt;
-use App\Models\User;
-use App\Services\EmailNotificationService;
-use App\Services\EngagespotService;
-use Carbon\Carbon;
-use Exception;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
-use Maatwebsite\Excel\Facades\Excel;
-
-class TestReportRepository extends BaseRepository
-{
-    public function testsReport($request)
-    {
-        $attemptNumber = $request->attempt ?? 1;
-
-        $client = $this->getClient(auth()->user());
-        $query = Test::select('id', 'name', 'desc', 'duration', 'total_marks', 'status', 'created_at')
-            ->where('client_id', $client->id)
-            ->withCount('questions')
-            ->with(['attempts' => function ($queryOne) use ($attemptNumber) {
-                $queryOne->where('attempts', $attemptNumber);
-            }])
-            ->whereDoesntHave('chapters')
-            ->orderBy('id', 'desc');
-        $query->when($request->name)->where('name', 'Like', '%' . $request->name . '%');
-        $query->when($request->segment_batch_id)->whereRelation('batches', 'segment_batches.id', $request->segment_batch_id);
-
-        $query->when($request->from_date, function ($q) use ($request) {
-            $fromDate = Carbon::parse($request->from_date)->startOfDay();
-            $q->where('created_at', '>=', $fromDate);
-        });
-
-        $query->when($request->to_date, function ($q) use ($request) {
-            $toDate = Carbon::parse($request->to_date)->endOfDay();
-            $q->where('created_at', '<=', $toDate);
-        });
-
-        $total_data = $query->count();
-        if ($request->page && $request->per_page) {
-            $total_data = $query->count();
-            $offset = $request->per_page * ($request->page - 1);
-            $data = $this->WithPagination($query, $offset, $request->per_page)->get();
-            $totalPages = ceil($total_data  / $request->per_page);
-        } else {
-            $data = $query->get();
-            $totalPages = 1;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KYC Details</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
         }
-        $data->map(function ($test) {
-            $testAttempts = $test->attempts;
-            $attemptsCount = $testAttempts->count();
-
-            $totalMark = $attemptsCount > 0 ? $testAttempts->sum('total_mark') : 0;
-            $totalTimeTaken = $attemptsCount > 0 ? $testAttempts->sum('total_time_taken') : 0;
-
-            $test['attempts_count'] = $attemptsCount;
-            $test['average_marks'] = $attemptsCount > 0 ? ($totalMark / $attemptsCount) : 0;
-            $test['average_time'] = $attemptsCount > 0 ? ($totalTimeTaken / $attemptsCount) : 0;
-            $test['top_score'] = $testAttempts->max('total_mark');
-            $test['highest_user_attempt'] = $test->attempts()->max('attempts');
-            unset($test->attempts);
-            return $test;
-        });
-        if ($request->export == true) {
-            $user = auth()->user();
-            $client = $this->getClient(auth()->user());
-            $client_name = strToUpper($client->name);
-            $filename = $client_name . '/EXPORTS/' . date('d-M-y') . '/mock_test_report' . now() . '.xlsx';
-            Excel::store(new TestReportExport($data), $filename, 's3');
-            $url = Storage::disk('s3')->url($filename);
-            $user->exportDetails()->create(['export_type' => 'mock_test_report', 'row_count' => count($data), 'file' => $url, 'client_id' => $client->id]);
-            try {
-                $engagespot = new EngagespotService;
-                $user = auth()->user();
-                $engagespot->recipients = array($user->id);
-                $engagespot->client_id = $client->id;
-                $engagespot->type = "export";
-                $engagespot->data = [
-                    'client_name' => $client_name,
-                    'url' => $url
-                ];
-                $engagespot->send();
-            } catch (Exception $e) {
-                true;
-            }
-            return $this->successResponse([
-                'message' => 'data will be exported',
-                // 'url'=> $url
-            ]);
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
         }
-        return $this->successResponse([
-            'total_page' => $totalPages,
-            'total_data' => $total_data,
-            'data' => $data
-        ]);
-    }
-
-    public function excerciseReport($request)
-    {
-        $attempt = $request->attempt ?? 1;
-        $client = $this->getClient(auth()->user());
-        // $client = auth()->user();
-        $query = Test::select('id', 'name', 'desc', 'duration', 'total_marks', 'status')
-            ->where('client_id', $client->id)
-            ->orderBy('id', 'desc')->withCount('questions')
-            ->with(['attempts' => function ($queryOne) use ($attempt) {
-                $queryOne->where('attempts', $attempt);
-            }])
-            ->with('chapters.product:id,name')->whereHas('chapters');
-        $query->when($request->name)->where('name', 'Like', '%' . $request->name . '%');
-        $query->when($request->chapter_id)->whereHas('chapters', function ($queryOne) use ($request) {
-            $queryOne->where('chapter_id', $request->chapter_id);
-        });
-
-        $query->when($request->product_id)->whereHas('chapters', function ($queryOne) use ($request) {
-            $queryOne->where('product_id', $request->product_id);
-        });
-
-        $query->when($request->from_date, function ($q) use ($request) {
-            $fromDate = Carbon::parse($request->from_date)->startOfDay();
-            $q->where('created_at', '>=', $fromDate);
-        });
-
-        $query->when($request->to_date, function ($q) use ($request) {
-            $toDate = Carbon::parse($request->to_date)->endOfDay();
-            $q->where('created_at', '<=', $toDate);
-        });
-
-        $total_data = $query->count();
-        if ($request->page && $request->per_page) {
-            $total_data = $query->count();
-            $offset = $request->per_page * ($request->page - 1);
-            $data = $this->WithPagination($query, $offset, $request->per_page)->get();
-            $totalPages = ceil($total_data  / $request->per_page);
-        } else {
-            $data = $query->get();
-            $totalPages = 1;
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
         }
-        $data->map(function ($test) {
-            $testAttempts = $test->attempts;
-            $attemptsCount = $testAttempts->count();
-
-            $totalMark = $attemptsCount > 0 ? $testAttempts->sum('total_mark') : 0;
-            $totalTimeTaken = $attemptsCount > 0 ? $testAttempts->sum('total_time_taken') : 0;
-
-            $test['attempts_count'] = $attemptsCount;
-            $test['average_marks'] = $attemptsCount > 0 ? ($totalMark / $attemptsCount) : 0;
-            $test['average_time'] = $attemptsCount > 0 ? ($totalTimeTaken / $attemptsCount) : 0;
-            $test['top_score'] = $testAttempts->max('total_mark');
-            $test['highest_user_attempt'] = $test->attempts()->max('attempts');
-            unset($test->attempts);
-            return $test;
-        });
-        if ($request->export == true) {
-            $user = auth()->user();
-            $client = $this->getClient(auth()->user());
-            $client_name = strToUpper($client->name);
-            $filename = $client_name . '/EXPORTS/' . date('d-M-y') . '/exercise_report' . now() . '.xlsx';
-            Excel::store(new TestReportExport($data), $filename, 's3');
-            $url = Storage::disk('s3')->url($filename);
-            $user->exportDetails()->create(['export_type' => 'exercise_report', 'row_count' => count($data), 'file' => $url, 'client_id' => $client->id]);
-            try {
-                $engagespot = new EngagespotService;
-                $user = auth()->user();
-                $engagespot->recipients = array($user->id);
-                $engagespot->client_id = $client->id;
-                $engagespot->type = "export";
-                $engagespot->data = [
-                    'client_name' => $client_name,
-                    'url' => $url
-                ];
-                $engagespot->send();
-            } catch (Exception $e) {
-                true;
-            }
-            return $this->successResponse([
-                'message' => 'data will be exported',
-                // 'url'=> $url
-            ]);
+        th {
+            background-color: #f4f4f4;
         }
-        return $this->successResponse([
-            'total_page' => $totalPages,
-            'total_data' => $total_data,
-            'data' => $data
-        ]);
-    }
-
-    private function averageMarkOfTest($test, $attempt)
-    {
-        $total_marks = $test->attempts()->where('attempts', $attempt)->sum('total_mark');
-        $total_attempts = $test->attempts()->where('attempts', $attempt)->count();
-        $average = $total_attempts == 0 ? 0 : ($total_marks / $total_attempts);
-        return $average;
-    }
-
-    private function averageTimeOfTest($test, $attempt)
-    {
-        $total_time = $test->attempts()->where('attempts', $attempt)->sum('total_time_taken');
-        $total_attempts = $test->attempts()->where('attempts', $attempt)->count();
-        $average = $total_attempts == 0 ? 0 : ($total_time / $total_attempts);
-        return $average;
-    }
-
-    private function learnersMarks($test, $attempt)
-    {
-        $data['max_mark'] = $test->attempts()->where('attempts', $attempt)->max('total_mark');
-        $data['min_mark'] = $test->attempts()->where('attempts', $attempt)->min('total_mark');
-        return $data;
-    }
-
-    public function reportOfATest($request, $test)
-    {
-        $attempt = $request->attempt ?? 1;
-        $test = Test::select('id', 'name', 'desc', 'duration', 'total_marks', 'status')
-            ->where('id', $test->id)
-            ->withCount('questions')
-            ->first();
-        $testAttempts = TestAttempt::where('test_id', $test->id)->where('attempts', $attempt)->get();
-        $attemptsCount = $testAttempts->count();
-        $test['grading_report'] = $this->getGradingReport($test, $attempt);
-        $test['questions'] = [];
-
-        $totalMark = $attemptsCount > 0 ? $testAttempts->sum('total_mark') : 0;
-        $totalTimeTaken = $attemptsCount > 0 ? $testAttempts->sum('total_time_taken') : 0;
-
-        $test['attempts_count'] = $attemptsCount;
-        $test['average_marks'] = $attemptsCount > 0 ? ($totalMark / $attemptsCount) : 0;
-        $test['average_time'] = $attemptsCount > 0 ? ($totalTimeTaken / $attemptsCount) : 0;
-        $test['top_score'] = $testAttempts->max('total_mark');
-        // $test->questions->map(function ($question) use ($test, $attempt) {
-        //     $question['percentages_options'] = $this->getPercentages($question, $test, $attempt);
-        //     $question['percentages_result'] = $this->getWrongPercentage($question, $test, $attempt);
-        //     return $question;
-        // });
-        return $test;
-    }
-
-    public function reportOfATestsQuestions($request, $test)
-    {
-        $attempt = $request->attempt ?? 1;
-        $query = $test->questions()->where('question_type', 'Multi_choice')->orderBy('order');
-
-        if ($request->page && $request->per_page) {
-            $offset = $request->per_page * ($request->page - 1);
-            $total_data  = $query->count();
-            $totalPages = ceil($total_data / $request->per_page);
-            $data = $query->WithPagination($offset, $request->per_page)->get();
-        } else {
-            $total_data = $query->count();
-            $data = $query->get();
+        button {
+            padding: 5px 10px;
+            margin: 5px;
+            cursor: pointer;
         }
-        $data->map(function ($question) use ($test, $attempt) {
-            $question['percentages_options'] = $this->getPercentages($question, $test, $attempt);
-            $question['percentages_result'] = $this->getWrongPercentage($question, $test, $attempt);
-            return $question;
-        });
-        return $this->successResponse([
-            'total_page' => $totalPages ?? 1,
-            'total_data' => $total_data,
-            'data' => $data
-        ]);
-    }
-
-    private function getPercentages($question, $test, $attempt)
-    {
-        $percentages = [];
-        $options = $question->options;
-        $total_count = AttemptedQuestion::where('question_id', $question->id)->whereRelation('testAttempt', 'test_id', $test->id)->whereRelation('testAttempt', 'attempts', $attempt)->count();
-        foreach ($options as $option) {
-            $count = AttemptedQuestion::where('question_id', $question->id)->whereRelation('testAttempt', 'test_id', $test->id)->whereRelation('testAttempt', 'attempts', $attempt)->where('answer', $option)->count();
-            $percentage = $total_count == 0 ? 0 : round(($count / $total_count) * 100, 2);
-            $percentages[$option] = $percentage;
+        .btn-approve {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
         }
-        return $percentages;
-    }
-
-    private function getWrongPercentage($question, $test, $attempt)
-    {
-        $total_count = AttemptedQuestion::where('question_id', $question->id)->whereRelation('testAttempt', 'test_id', $test->id)->whereRelation('testAttempt', 'attempts', $attempt)->count();
-        $false_count = AttemptedQuestion::where('question_id', $question->id)->where('is_correct', false)->whereRelation('testAttempt', 'attempts', $attempt)->whereRelation('testAttempt', 'test_id', $test->id)->count();
-        $correct_count = AttemptedQuestion::where('question_id', $question->id)->where('is_correct', true)->whereRelation('testAttempt', 'test_id', $test->id)->whereRelation('testAttempt', 'attempts', $attempt)->count();
-        $skip_count = AttemptedQuestion::where('question_id', $question->id)->where('is_skiped', true)->whereRelation('testAttempt', 'test_id', $test->id)->whereRelation('testAttempt', 'attempts', $attempt)->count();
-
-        $percentage_wrong = $total_count == 0 ? 0 : round(($false_count / $total_count) * 100, 2);
-        $percentage_correct = $total_count == 0 ? 0 : round(($correct_count / $total_count) * 100, 2);
-        $percentage_skiped = $total_count == 0 ? 0 : round(($skip_count / $total_count) * 100, 2);
-
-        $percentages['wrong'] = $percentage_wrong;
-        $percentages['correct'] = $percentage_correct;
-        $percentages['skiped'] = $percentage_skiped;
-        return $percentages;
-    }
-
-    public function attemptReportOfTest($request, $test)
-    {
-        $attempt = $request->attempt ?? 1;
-        $query = $test->attempts()->with('user:id,name,email,mobile', 'test:id,name,desc,duration,total_marks,thumbnail', 'test_grade', 'user.userProfile')
-            ->where('attempts', $attempt)->withCount('correctAnswers', 'inCorrectAnswers', 'skipedAnswers')->whereHas('user');
-        $query->when($request->email)->whereHas('user', function ($queryOne) use ($request) {
-            $queryOne->where('email', 'Like', '%' . $request->email . '%');
-        });
-        $query->when($request->mobile)->whereHas('user', function ($queryOne) use ($request) {
-            $queryOne->where('mobile', 'Like', '%' . $request->mobile . '%');
-        });
-        $query->when($request->name)->whereHas('user', function ($queryOne) use ($request) {
-            $queryOne->where('name', 'Like', '%' . $request->name . '%');
-        });
-        $questions_count = $test->questions()->count();
-        $total_data = $query->count();
-
-        if ($request->export == true) {
-            $user = auth()->user();
-            $client = $this->getClient(auth()->user());
-            $client_name = strToUpper($client->name);
-            $data = $query->get();
-            $filename = $client_name . '/EXPORTS/' . date('d-M-y') . '/test_attempt_report' . now() . '.xlsx';
-            Excel::store(new UserTestExport($data, $questions_count), $filename, 's3');
-            $url = Storage::disk('s3')->url($filename);
-            $user->exportDetails()->create(['export_type' => 'learners_test_export', 'row_count' => count($data), 'file' => $url, 'client_id' => $client->id]);
-            try {
-                $engagespot = new EngagespotService;
-                $user = auth()->user();
-                $engagespot->recipients = array($user->id);
-                $engagespot->client_id = $client->id;
-                $engagespot->type = "export";
-                $engagespot->data = [
-                    'client_name' => $client_name,
-                    'url' => $url
-                ];
-                $engagespot->send();
-            } catch (Exception $e) {
-                true;
-            }
+        .btn-reject {
+            background-color: #f44336;
+            color: white;
+            border: none;
         }
-        if ($request->page && $request->per_page) {
-            $offset = $request->per_page * ($request->page - 1);
-            $total_data  = $query->count();
-            $totalPages = ceil($total_data / $request->per_page);
-            $data = $query->WithPagination($offset, $request->per_page)->get();
-            $data->map(function ($attempt) use ($questions_count) {
-                $attempt['total_questions_count'] = $questions_count;
-                return $attempt;
+        .btn-view {
+            background-color: #008CBA;
+            color: white;
+            border: none;
+        }
+        .btn-cron {
+            background-color: #ff9800;
+            color: white;
+            border: none;
+            float: right;
+            margin-bottom: 10px;
+        }
+        .btn-generate {
+            background-color: #f57c00;
+            color: white;
+            border: none;
+            float: right;
+            margin-bottom: 10px;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>
+        KYC Details
+        <button class="btn-cron" onclick="runTodaysCron()">Run Today's Cron</button>
+        <button class="btn-generate" onclick="generateLinks()">Generate Links</button>
+    </h1>
+    <table id="kycTable">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Mobile</th>
+                <th>Status</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <div id="kycDetails" style="display:none; border: 1px solid #ddd; padding: 10px;">
+        <h2>KYC Details</h2>
+        <p><strong>Pan Number:</strong> <span id="panNumber"></span></p>
+        <p><strong>GST Number:</strong> <span id="gstNumber"></span></p>
+        <p><strong>Bank Account Number:</strong> <span id="bankAccount"></span></p>
+        <p><strong>IFSC Code:</strong> <span id="ifscCode"></span></p>
+        <p><strong>KYC Type:</strong> <span id="kycType"></span></p>
+        <button class="btn-approve" onclick="updateKycStatus('approved')">Approve</button>
+        <button class="btn-reject" onclick="updateKycStatus('rejected')">Reject</button>
+    </div>
+
+    <script>
+        const baseUrl = 'https://api.feezy.alpha.logidots.com/api';
+        let currentKycId = null;
+
+        async function fetchKycList() {
+            const response = await fetch(`${baseUrl}/user-kyc/admin?page=1&limit=20`);
+            const data = await response.json();
+            const tbody = document.querySelector("#kycTable tbody");
+            tbody.innerHTML = '';
+            data.data.forEach(kyc => {
+                const row = document.createElement("tr");
+                row.innerHTML = `
+                    <td>${kyc.user.name || "N/A"}</td>
+                    <td>${kyc.user.mobile || "N/A"}</td>
+                    <td>${kyc.status}</td>
+                    <td>
+                        <button class="btn-view" onclick="viewKycDetails('${kyc.id}', ${JSON.stringify(kyc).replace(/"/g, '&quot;')})">View</button>
+                    </td>
+                `;
+                tbody.appendChild(row);
             });
-            return $this->successResponse([
-                'total_page' => $totalPages ?? 1,
-                'total_data' => $total_data,
-                'data' => $data
-            ]);
         }
-        $data = $query->get();
-        $data->map(function ($attempt) use ($questions_count) {
-            $attempt['total_questions_count'] = $questions_count;
-            return $attempt;
-        });
-        return $this->successResponse($data);
-    }
 
-    private function getGradingReport($test, $attempt)
-    {
-        $users = User::whereHas('testAttempts', function ($query) use ($test, $attempt) {
-            $query->where('test_id', $test->id)->where('attempts', $attempt);
-        })->get();
-        $result['total_mark'] = $total_marks = $test->total_marks;
-        $result['submitted'] = count($users);
-        if ($total_marks == 0) {
-            $graging_stats = [];
-        } else {
-            $graging_stats = DB::table('test_attempts')
-                ->where('test_id', $test->id)->where('attempts', $attempt)
-                ->select(
-                    'user_id',
-                    DB::raw('((total_mark / ' . $total_marks . ')*100) AS percentage'),
-                )
-                // ->groupBy('user_id','percentage')
-                ->get();
+        function viewKycDetails(id, kyc) {
+            currentKycId = id;
+            document.getElementById("panNumber").innerText = kyc.pan_number || "N/A";
+            document.getElementById("gstNumber").innerText = kyc.gst_number || "N/A";
+            document.getElementById("bankAccount").innerText = kyc.bank_account_number || "N/A";
+            document.getElementById("ifscCode").innerText = kyc.ifsc_code || "N/A";
+            document.getElementById("kycType").innerText = (kyc.kyc_type || "N/A").toUpperCase();
+            document.getElementById("kycDetails").style.display = "block";
         }
-        $result['grading_stats'] = $graging_stats;
-        return $result;
-    }
-}
+
+        async function updateKycStatus(status) {
+            if (!currentKycId) return alert("No KYC selected");
+            const response = await fetch(`${baseUrl}/user-kyc/${currentKycId}/update-status`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ status }),
+            });
+            if (response.ok) {
+                alert(`KYC ${status} successfully!`);
+                fetchKycList();
+                document.getElementById("kycDetails").style.display = "none";
+            } else {
+                alert("Failed to update KYC status");
+            }
+        }
+
+        async function runTodaysCron() {
+            try {
+                const response = await fetch(`${baseUrl}/member-payments/run-cron`, { method: 'GET' });
+                if (response.ok) {
+                    alert("Today's cron ran successfully!");
+                } else {
+                    alert("Failed to run today's cron.");
+                }
+            } catch (error) {
+                alert("Error running today's cron. Please try again.");
+            }
+        }
+
+        async function generateLinks() {
+            try {
+                const response = await fetch(`${baseUrl}/payment-transactions/run-cron`, { method: 'GET' });
+                if (response.ok) {
+                    alert("Links generated successfully!");
+                } else {
+                    alert("Failed to generate links.");
+                }
+            } catch (error) {
+                alert("Error generating links. Please try again.");
+            }
+        }
+
+        fetchKycList();
+    </script>
+</body>
+</html>
