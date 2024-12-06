@@ -42,14 +42,25 @@
             color: white;
             border: none;
         }
+        .btn-cron {
+            background-color: #ff9800;
+            color: white;
+            border: none;
+            float: right;
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
-    <h1>KYC Details</h1>
+    <h1>
+        KYC Details
+        <button class="btn-cron" onclick="runTodaysCron()">Run Today's Cron</button>
+    </h1>
     <table id="kycTable">
         <thead>
             <tr>
                 <th>Name</th>
+                <th>Mobile</th>
                 <th>Status</th>
                 <th>Action</th>
             </tr>
@@ -81,6 +92,7 @@
                 const row = document.createElement("tr");
                 row.innerHTML = `
                     <td>${kyc.user.name || "N/A"}</td>
+                    <td>${kyc.user.mobile || "N/A"}</td>
                     <td>${kyc.status}</td>
                     <td>
                         <button class="btn-view" onclick="viewKycDetails('${kyc.id}', ${JSON.stringify(kyc).replace(/"/g, '&quot;')})">View</button>
@@ -96,7 +108,7 @@
             document.getElementById("gstNumber").innerText = kyc.gst_number || "N/A";
             document.getElementById("bankAccount").innerText = kyc.bank_account_number || "N/A";
             document.getElementById("ifscCode").innerText = kyc.ifsc_code || "N/A";
-            document.getElementById("kycType").innerText = kyc.kyc_type || "N/A";
+            document.getElementById("kycType").innerText = (kyc.kyc_type || "N/A").toUpperCase();
             document.getElementById("kycDetails").style.display = "block";
         }
 
@@ -115,6 +127,19 @@
                 document.getElementById("kycDetails").style.display = "none";
             } else {
                 alert("Failed to update KYC status");
+            }
+        }
+
+        async function runTodaysCron() {
+            try {
+                const response = await fetch(`${baseUrl}/member-payments/run-cron`, { method: 'GET' });
+                if (response.ok) {
+                    alert("Today's cron ran successfully!");
+                } else {
+                    alert("Failed to run today's cron.");
+                }
+            } catch (error) {
+                alert("Error running today's cron. Please try again.");
             }
         }
 
